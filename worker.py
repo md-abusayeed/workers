@@ -8,3 +8,7 @@ def Worker():
   print("OK")
 
 Worker():
+
+
+class Required:
+def pass
