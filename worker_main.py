@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -63,7 +64,7 @@ class WorkerClient:
         params: Mapping[str, Any] | None = None,
         payload: Any = None,
     ) -> Any:
-        last_error: Exception | None = None
+        request_id = uuid.uuid4().hex
 
         for attempt in range(self._config.retries + 1):
             try:
@@ -72,28 +73,37 @@ class WorkerClient:
                     path,
                     params=params,
                     json=payload,
+                    headers={
+                        "x-request-id": request_id,
+                    },
                 )
 
                 if response.status_code < 500:
                     response.raise_for_status()
                     return self._decode(response)
 
-                last_error = WorkerError(
-                    f"worker returned {response.status_code}: "
-                    f"{response.text[:1024]}"
+                error = WorkerError(
+                    f"worker returned {response.status_code} "
+                    f"for {method} {path} "
+                    f"(request_id={request_id})"
                 )
 
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                last_error = exc
+                error = WorkerError(
+                    f"worker request failed for {method} {path} "
+                    f"(request_id={request_id})"
+                )
+                error.__cause__ = exc
 
             if attempt < self._config.retries:
                 await asyncio.sleep(
                     self._config.backoff * (2**attempt)
                 )
+                continue
 
-        raise WorkerError(
-            "request failed after retries"
-        ) from last_error
+            raise error
+
+        raise AssertionError("unreachable")
 
     @staticmethod
     def _decode(response: httpx.Response) -> Any:
