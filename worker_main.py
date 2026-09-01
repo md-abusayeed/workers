@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -11,10 +10,14 @@ import httpx
 @dataclass(frozen=True, slots=True)
 class Config:
     endpoint: str
-    token: str | None
+    token: str | None = None
     timeout: float = 30.0
     retries: int = 3
     backoff: float = 0.5
+
+
+class WorkerError(RuntimeError):
+    pass
 
 
 class WorkerClient:
@@ -22,17 +25,18 @@ class WorkerClient:
 
     def __init__(self, config: Config) -> None:
         self._config = config
+
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+        }
+
+        if config.token:
+            headers["authorization"] = f"Bearer {config.token}"
+
         self._client = httpx.AsyncClient(
             base_url=config.endpoint.rstrip("/"),
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                **(
-                    {"authorization": f"Bearer {config.token}"}
-                    if config.token
-                    else {}
-                ),
-            },
+            headers=headers,
             timeout=httpx.Timeout(config.timeout),
             limits=httpx.Limits(
                 max_connections=100,
@@ -42,14 +46,14 @@ class WorkerClient:
             follow_redirects=False,
         )
 
-    async def close(self) -> None:
-        await self._client.aclose()
-
     async def __aenter__(self) -> WorkerClient:
         return self
 
     async def __aexit__(self, *_: object) -> None:
         await self.close()
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def request(
         self,
@@ -75,7 +79,7 @@ class WorkerClient:
                     return self._decode(response)
 
                 last_error = WorkerError(
-                    f"upstream returned {response.status_code}: "
+                    f"worker returned {response.status_code}: "
                     f"{response.text[:1024]}"
                 )
 
@@ -93,9 +97,7 @@ class WorkerClient:
 
     @staticmethod
     def _decode(response: httpx.Response) -> Any:
-        content_type = response.headers.get("content-type", "")
-
-        if "application/json" in content_type:
+        if "application/json" in response.headers.get("content-type", ""):
             return response.json()
 
         return response.text
@@ -123,25 +125,3 @@ class WorkerClient:
             path,
             payload=payload,
         )
-
-
-class WorkerError(RuntimeError):
-    pass
-
-
-async def main() -> None:
-    endpoint = os.environ["WORKER_URL"]
-    token = os.getenv("WORKER_TOKEN")
-
-    async with WorkerClient(
-        Config(
-            endpoint=endpoint,
-            token=token,
-        )
-    ) as worker:
-        result = await worker.get("/api/status")
-        print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
