@@ -7,7 +7,8 @@ from typing import Any, Mapping
 
 import httpx
 
-
+class Config_Crr:
+    endpoint: int
 @dataclass(frozen=True, slots=True)
 class Config:
     endpoint: str
